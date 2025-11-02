@@ -96,6 +96,61 @@ public:
      */
     void server_stream_cancel(int stream_id);
 
+    // Client-streaming RPC
+    /**
+     * Start a client-streaming RPC call.
+     *
+     * @param full_method Method name in format "/package.Service/Method"
+     * @param call_opts Dictionary with optional keys:
+     *   - deadline_ms (int): Deadline in milliseconds from now
+     *   - metadata (Dictionary): Custom metadata key-value pairs
+     * @return Stream ID (positive integer) on success, -1 on error
+     */
+    int client_stream_start(
+        const godot::String& full_method,
+        const godot::Dictionary& call_opts = godot::Dictionary()
+    );
+
+    // Bidirectional streaming RPC
+    /**
+     * Start a bidirectional streaming RPC call.
+     *
+     * @param full_method Method name in format "/package.Service/Method"
+     * @param call_opts Dictionary with optional keys:
+     *   - deadline_ms (int): Deadline in milliseconds from now
+     *   - metadata (Dictionary): Custom metadata key-value pairs
+     * @return Stream ID (positive integer) on success, -1 on error
+     */
+    int bidi_stream_start(
+        const godot::String& full_method,
+        const godot::Dictionary& call_opts = godot::Dictionary()
+    );
+
+    // Stream management (for client and bidirectional streams)
+    /**
+     * Send a message on an active stream (client or bidirectional streaming only).
+     *
+     * @param stream_id Stream ID returned from client_stream_start or bidi_stream_start
+     * @param message_bytes Serialized message to send
+     * @return true if message was queued successfully, false otherwise
+     */
+    bool stream_send(int stream_id, const godot::PackedByteArray& message_bytes);
+
+    /**
+     * Close the send side of a stream (signal no more writes).
+     * For client-streaming, this triggers the server to send its response.
+     *
+     * @param stream_id Stream ID to close send on
+     */
+    void stream_close_send(int stream_id);
+
+    /**
+     * Cancel any active stream.
+     *
+     * @param stream_id Stream ID to cancel
+     */
+    void stream_cancel(int stream_id);
+
     // Logging
     /**
      * Set the log level for the extension.
@@ -118,6 +173,14 @@ private:
 
     // Helper to parse channel options
     ChannelOptions parse_channel_options(const godot::Dictionary& options);
+
+    // Helper to start a stream of a specific type
+    int start_stream(
+        StreamType stream_type,
+        const godot::String& full_method,
+        const godot::PackedByteArray& request_bytes,
+        const godot::Dictionary& call_opts
+    );
 
     // Stream callbacks (called from background threads)
     void on_stream_message(int stream_id, const godot::PackedByteArray& data);

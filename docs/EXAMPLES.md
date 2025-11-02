@@ -13,6 +13,8 @@ Practical code examples for common use cases with godot_grpc.
   - [Leaderboard Updates](#leaderboard-updates)
   - [Real-time Chat](#real-time-chat)
   - [Matchmaking](#matchmaking)
+  - [File Upload (Client-Streaming)](#file-upload-client-streaming)
+  - [Real-Time Game Sync (Bidirectional)](#real-time-game-sync-bidirectional)
 - [Advanced Patterns](#advanced-patterns)
   - [Connection Manager Singleton](#connection-manager-singleton)
   - [Retry Logic](#retry-logic)
@@ -642,6 +644,361 @@ func _parse_matchmaking_update(data: PackedByteArray) -> Dictionary:
 func _exit_tree():
     cancel_matchmaking()
     grpc_client.close()
+```
+
+---
+
+### File Upload (Client-Streaming)
+
+Upload a file in chunks using client-streaming:
+
+```gdscript
+class_name FileUploader
+extends Node
+
+signal upload_started()
+signal upload_progress(bytes_sent: int, total_bytes: int)
+signal upload_completed(file_id: String)
+signal upload_failed(reason: String)
+
+var grpc_client: GrpcClient
+var stream_id: int = 0
+var file_path: String = ""
+var chunk_size: int = 65536  # 64KB chunks
+
+func _ready():
+    grpc_client = GrpcClient.new()
+    grpc_client.message.connect(_on_upload_response)
+    grpc_client.finished.connect(_on_upload_finished)
+    grpc_client.error.connect(_on_upload_error)
+
+func connect_to_server(endpoint: String) -> bool:
+    return grpc_client.connect(endpoint, {})
+
+func upload_file(path: String, auth_token: String = ""):
+    file_path = path
+
+    if !FileAccess.file_exists(file_path):
+        upload_failed.emit("File not found: " + file_path)
+        return
+
+    var call_opts = {}
+    if !auth_token.is_empty():
+        call_opts["metadata"] = {"authorization": "Bearer " + auth_token}
+
+    # Start client-streaming
+    stream_id = grpc_client.client_stream_start("/files.FileService/Upload", call_opts)
+
+    if stream_id <= 0:
+        upload_failed.emit("Failed to start upload stream")
+        return
+
+    upload_started.emit()
+
+    # Read and send file in chunks
+    var file = FileAccess.open(file_path, FileAccess.READ)
+    if !file:
+        upload_failed.emit("Failed to open file")
+        grpc_client.stream_cancel(stream_id)
+        return
+
+    var total_size = file.get_length()
+    var bytes_sent = 0
+
+    while !file.eof_reached():
+        var data = file.get_buffer(chunk_size)
+        var chunk_msg = _create_chunk_message(file_path.get_file(), data, bytes_sent, total_size)
+
+        if !grpc_client.stream_send(stream_id, chunk_msg):
+            upload_failed.emit("Failed to send chunk")
+            file.close()
+            return
+
+        bytes_sent += data.size()
+        upload_progress.emit(bytes_sent, total_size)
+
+        # Small delay to avoid overwhelming the server
+        await get_tree().create_timer(0.01).timeout
+
+    file.close()
+
+    # Signal we're done sending
+    grpc_client.stream_close_send(stream_id)
+    print("Upload complete, waiting for server confirmation...")
+
+func _create_chunk_message(filename: String, data: PackedByteArray, offset: int, total: int) -> PackedByteArray:
+    var buf = PackedByteArray()
+    # Field 1: filename (string)
+    buf.append(0x0a)
+    buf.append(filename.length())
+    buf.append_array(filename.to_utf8_buffer())
+    # Field 2: data (bytes)
+    buf.append(0x12)
+    buf.append_array(_encode_varint(data.size()))
+    buf.append_array(data)
+    # Field 3: offset (int64)
+    buf.append(0x18)
+    buf.append_array(_encode_varint(offset))
+    # Field 4: total_size (int64)
+    buf.append(0x20)
+    buf.append_array(_encode_varint(total))
+    return buf
+
+func _on_upload_response(sid: int, data: PackedByteArray):
+    if sid != stream_id:
+        return
+
+    var response = _parse_upload_response(data)
+    if response.success:
+        upload_completed.emit(response.file_id)
+    else:
+        upload_failed.emit("Server rejected upload: " + response.error)
+
+func _on_upload_finished(sid: int, status: int):
+    if sid == stream_id && status != 0:
+        upload_failed.emit("Upload failed with status: " + str(status))
+
+func _on_upload_error(sid: int, code: int, message: String):
+    if sid == stream_id:
+        upload_failed.emit(message)
+
+func _parse_upload_response(data: PackedByteArray) -> Dictionary:
+    # Simplified parsing
+    return {"success": true, "file_id": "file_123", "error": ""}
+
+func _encode_varint(value: int) -> PackedByteArray:
+    var buf = PackedByteArray()
+    while value > 127:
+        buf.append((value & 0x7F) | 0x80)
+        value >>= 7
+    buf.append(value & 0x7F)
+    return buf
+
+func _exit_tree():
+    if stream_id > 0:
+        grpc_client.stream_cancel(stream_id)
+    grpc_client.close()
+```
+
+**Usage:**
+
+```gdscript
+extends Control
+
+var uploader: FileUploader
+
+func _ready():
+    uploader = FileUploader.new()
+    add_child(uploader)
+
+    uploader.upload_progress.connect(_on_upload_progress)
+    uploader.upload_completed.connect(_on_upload_completed)
+    uploader.upload_failed.connect(_on_upload_failed)
+
+    if uploader.connect_to_server("dns:///files.example.com:443"):
+        uploader.upload_file("res://big_file.zip", "my_token")
+
+func _on_upload_progress(bytes_sent: int, total_bytes: int):
+    var progress = (bytes_sent * 100.0) / total_bytes
+    $ProgressBar.value = progress
+    $Label.text = "Uploading: %.1f%%" % progress
+
+func _on_upload_completed(file_id: String):
+    print("Upload successful! File ID: ", file_id)
+    $Label.text = "Upload complete!"
+
+func _on_upload_failed(reason: String):
+    print("Upload failed: ", reason)
+    $Label.text = "Upload failed: " + reason
+```
+
+---
+
+### Real-Time Game Sync (Bidirectional)
+
+Synchronize game state in real-time using bidirectional streaming:
+
+```gdscript
+class_name GameSync
+extends Node
+
+signal player_joined(player_id: String, player_name: String)
+signal player_left(player_id: String)
+signal state_update_received(update: Dictionary)
+
+var grpc_client: GrpcClient
+var stream_id: int = 0
+var player_id: String = ""
+var is_syncing: bool = false
+
+func _ready():
+    grpc_client = GrpcClient.new()
+    grpc_client.message.connect(_on_sync_message)
+    grpc_client.finished.connect(_on_sync_finished)
+    grpc_client.error.connect(_on_sync_error)
+
+func start_sync(pid: String, game_session_id: String):
+    player_id = pid
+
+    if !grpc_client.is_connected():
+        if !grpc_client.connect("dns:///game.example.com:443", {"use_tls": 1}):
+            print("Failed to connect")
+            return
+
+    # Start bidirectional stream
+    stream_id = grpc_client.bidi_stream_start("/game.GameSync/SyncState", {})
+
+    if stream_id <= 0:
+        print("Failed to start sync stream")
+        return
+
+    is_syncing = true
+
+    # Send initial join message
+    send_join(game_session_id)
+
+func send_join(session_id: String):
+    var msg = _create_sync_message("JOIN", {
+        "player_id": player_id,
+        "session_id": session_id
+    })
+    grpc_client.stream_send(stream_id, msg)
+
+func send_position_update(position: Vector3, rotation: Vector3):
+    if !is_syncing:
+        return
+
+    var msg = _create_sync_message("POSITION", {
+        "player_id": player_id,
+        "x": position.x,
+        "y": position.y,
+        "z": position.z,
+        "rot_x": rotation.x,
+        "rot_y": rotation.y,
+        "rot_z": rotation.z
+    })
+    grpc_client.stream_send(stream_id, msg)
+
+func send_action(action_type: String, data: Dictionary = {}):
+    if !is_syncing:
+        return
+
+    data["player_id"] = player_id
+    var msg = _create_sync_message(action_type, data)
+    grpc_client.stream_send(stream_id, msg)
+
+func _on_sync_message(sid: int, data: PackedByteArray):
+    if sid != stream_id:
+        return
+
+    var update = _parse_sync_message(data)
+
+    match update.type:
+        "PLAYER_JOINED":
+            player_joined.emit(update.data.player_id, update.data.player_name)
+
+        "PLAYER_LEFT":
+            player_left.emit(update.data.player_id)
+
+        "POSITION":
+            # Update other player's position
+            state_update_received.emit(update)
+
+        "ACTION":
+            # Handle player action
+            state_update_received.emit(update)
+
+func _on_sync_finished(sid: int, status: int):
+    if sid == stream_id:
+        is_syncing = false
+        print("Sync stream ended")
+
+func _on_sync_error(sid: int, code: int, message: String):
+    if sid == stream_id:
+        is_syncing = false
+        print("Sync error: ", message)
+
+func stop_sync():
+    if stream_id > 0 && is_syncing:
+        send_action("LEAVE", {})
+        grpc_client.stream_close_send(stream_id)
+        is_syncing = false
+
+func _create_sync_message(msg_type: String, data: Dictionary) -> PackedByteArray:
+    # Implement proper protobuf encoding
+    var buf = PackedByteArray()
+    # Field 1: type (string)
+    buf.append(0x0a)
+    buf.append(msg_type.length())
+    buf.append_array(msg_type.to_utf8_buffer())
+    # Field 2: data (bytes - JSON for simplicity)
+    var json_data = JSON.stringify(data).to_utf8_buffer()
+    buf.append(0x12)
+    buf.append(json_data.size())
+    buf.append_array(json_data)
+    return buf
+
+func _parse_sync_message(data: PackedByteArray) -> Dictionary:
+    # Implement proper protobuf parsing
+    return {"type": "POSITION", "data": {}}
+
+func _exit_tree():
+    stop_sync()
+    grpc_client.close()
+```
+
+**Usage in Game:**
+
+```gdscript
+extends Node3D
+
+var game_sync: GameSync
+var player_node: Node3D
+var other_players: Dictionary = {}
+
+func _ready():
+    game_sync = GameSync.new()
+    add_child(game_sync)
+
+    game_sync.player_joined.connect(_on_player_joined)
+    game_sync.player_left.connect(_on_player_left)
+    game_sync.state_update_received.connect(_on_state_update)
+
+    game_sync.start_sync("player_123", "game_session_456")
+
+func _process(delta):
+    # Send position updates periodically
+    if player_node && game_sync.is_syncing:
+        var pos = player_node.global_position
+        var rot = player_node.global_rotation
+        game_sync.send_position_update(pos, rot)
+
+func _on_player_joined(player_id: String, player_name: String):
+    print("Player joined: ", player_name)
+    # Spawn other player's character
+    var other_player = preload("res://player.tscn").instantiate()
+    add_child(other_player)
+    other_players[player_id] = other_player
+
+func _on_player_left(player_id: String):
+    print("Player left: ", player_id)
+    if player_id in other_players:
+        other_players[player_id].queue_free()
+        other_players.erase(player_id)
+
+func _on_state_update(update: Dictionary):
+    if update.type == "POSITION":
+        var pid = update.data.player_id
+        if pid in other_players:
+            var player = other_players[pid]
+            player.global_position = Vector3(
+                update.data.x,
+                update.data.y,
+                update.data.z
+            )
+
+func _exit_tree():
+    game_sync.stop_sync()
 ```
 
 ---

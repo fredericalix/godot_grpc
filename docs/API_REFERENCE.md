@@ -18,7 +18,7 @@ Complete API documentation for the godot_grpc GDExtension.
 
 ## GrpcClient Class
 
-The main class for interacting with gRPC servers. Handles connection lifecycle, unary calls, and streaming RPCs.
+The main class for interacting with gRPC servers. Handles connection lifecycle, unary calls, and all four gRPC streaming patterns: server-streaming, client-streaming, and bidirectional streaming.
 
 ### Properties
 
@@ -216,7 +216,10 @@ print("Log level: ", current_level)
 
 #### `message(stream_id: int, data: PackedByteArray)`
 
-Emitted when a message is received on a server stream.
+Emitted when a message is received on any stream type (server, client, or bidirectional).
+
+For server-streaming and bidirectional: Called for each message received from the server.
+For client-streaming: Called once when the server sends its single response.
 
 **Parameters:**
 - `stream_id` (int): The ID of the stream that received the message
@@ -237,7 +240,7 @@ func _on_stream_message(stream_id: int, data: PackedByteArray):
 
 #### `finished(stream_id: int, status_code: int)`
 
-Emitted when a server stream completes (successfully or with error).
+Emitted when any stream completes (successfully or with error).
 
 **Parameters:**
 - `stream_id` (int): The ID of the stream that finished
@@ -259,7 +262,7 @@ func _on_stream_finished(stream_id: int, status_code: int):
 
 #### `error(stream_id: int, error_code: int, message: String)`
 
-Emitted when an error occurs on a server stream.
+Emitted when an error occurs on any stream.
 
 **Parameters:**
 - `stream_id` (int): The ID of the stream with the error
@@ -384,7 +387,7 @@ client.connect("dns:///localhost:50051", opts)
 
 ## Call Options
 
-Per-call options passed to `unary()` or `server_stream_start()`:
+Per-call options passed to `unary()`, `server_stream_start()`, `client_stream_start()`, or `bidi_stream_start()`:
 
 ```gdscript
 var call_opts = {
@@ -492,12 +495,124 @@ All signals are automatically emitted on Godot's main thread using `call_deferre
 
 ---
 
+##### `client_stream_start(method: String, call_opts: Dictionary = {}) -> int`
+
+Starts a client-streaming RPC call where the client sends multiple messages and receives one response.
+
+**Parameters:**
+- `method` (String): Full method path in format `"/package.Service/Method"`
+- `call_opts` (Dictionary, optional): Per-call options
+
+**Returns:** `int` - Stream ID (> 0 on success, -1 on failure)
+
+**Example:**
+```gdscript
+# Start client-streaming
+var stream_id = client.client_stream_start("/upload.FileService/UploadChunks", {})
+
+if stream_id > 0:
+    # Send multiple chunks
+    client.stream_send(stream_id, chunk1)
+    client.stream_send(stream_id, chunk2)
+    client.stream_send(stream_id, chunk3)
+
+    # Signal we're done sending
+    client.stream_close_send(stream_id)
+
+    # Server will send one response via 'message' signal
+```
+
+---
+
+##### `bidi_stream_start(method: String, call_opts: Dictionary = {}) -> int`
+
+Starts a bidirectional streaming RPC call where both client and server can send multiple messages.
+
+**Parameters:**
+- `method` (String): Full method path in format `"/package.Service/Method"`
+- `call_opts` (Dictionary, optional): Per-call options
+
+**Returns:** `int` - Stream ID (> 0 on success, -1 on failure)
+
+**Example:**
+```gdscript
+# Start bidirectional stream
+var stream_id = client.bidi_stream_start("/chat.Chat/StreamChat", {})
+
+if stream_id > 0:
+    # Can send and receive messages concurrently
+    client.stream_send(stream_id, message1)
+
+    # Messages arrive via 'message' signal
+    # Can send more at any time
+```
+
+---
+
+##### `stream_send(stream_id: int, message_bytes: PackedByteArray) -> bool`
+
+Sends a message on an active stream (client-streaming or bidirectional only).
+
+**Parameters:**
+- `stream_id` (int): Stream ID from `client_stream_start()` or `bidi_stream_start()`
+- `message_bytes` (PackedByteArray): Serialized protobuf message
+
+**Returns:** `bool` - `true` if queued successfully, `false` otherwise
+
+**Example:**
+```gdscript
+var stream_id = client.client_stream_start("/service/Method", {})
+
+for i in range(10):
+    var message = create_message(i)
+    if !client.stream_send(stream_id, message):
+        print("Failed to send message ", i)
+        break
+```
+
+---
+
+##### `stream_close_send(stream_id: int) -> void`
+
+Closes the send side of a stream (signals no more messages will be sent).
+
+For client-streaming, this triggers the server to send its single response.
+For bidirectional streaming, this indicates the client won't send more (server can still send).
+
+**Parameters:**
+- `stream_id` (int): Stream ID to close send on
+
+**Example:**
+```gdscript
+# After sending all messages
+client.stream_send(stream_id, last_message)
+client.stream_close_send(stream_id)
+
+# Now wait for server's response via signal
+```
+
+---
+
+##### `stream_cancel(stream_id: int) -> void`
+
+Cancels any active stream (server, client, or bidirectional).
+
+This is a unified method that works with all stream types. `server_stream_cancel` remains for backward compatibility.
+
+**Parameters:**
+- `stream_id` (int): Stream ID to cancel
+
+**Example:**
+```gdscript
+# Cancel any stream type
+client.stream_cancel(stream_id)
+```
+
+---
+
 ## Limitations
 
 1. **Client-only**: No server implementation
-2. **No client streaming**: Only unary and server-streaming supported
-3. **No bidirectional streaming**: Not implemented
-4. **Blocking unary calls**: `unary()` blocks the calling thread
-5. **No built-in protobuf**: You must provide your own serialization
-
-For client/bidirectional streaming, consider using multiple server streams or contributing to the project!
+2. **Blocking unary calls**: `unary()` blocks the calling thread
+3. **No built-in protobuf**: You must provide your own serialization
+4. **No flow control**: Streaming messages are queued without backpressure

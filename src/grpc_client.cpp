@@ -33,6 +33,17 @@ void GrpcClient::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("server_stream_start", "full_method", "request_bytes", "call_opts"), &GrpcClient::server_stream_start, DEFVAL(godot::Dictionary()));
     godot::ClassDB::bind_method(godot::D_METHOD("server_stream_cancel", "stream_id"), &GrpcClient::server_stream_cancel);
 
+    // Client-streaming RPC
+    godot::ClassDB::bind_method(godot::D_METHOD("client_stream_start", "full_method", "call_opts"), &GrpcClient::client_stream_start, DEFVAL(godot::Dictionary()));
+
+    // Bidirectional streaming RPC
+    godot::ClassDB::bind_method(godot::D_METHOD("bidi_stream_start", "full_method", "call_opts"), &GrpcClient::bidi_stream_start, DEFVAL(godot::Dictionary()));
+
+    // Stream management
+    godot::ClassDB::bind_method(godot::D_METHOD("stream_send", "stream_id", "message_bytes"), &GrpcClient::stream_send);
+    godot::ClassDB::bind_method(godot::D_METHOD("stream_close_send", "stream_id"), &GrpcClient::stream_close_send);
+    godot::ClassDB::bind_method(godot::D_METHOD("stream_cancel", "stream_id"), &GrpcClient::stream_cancel);
+
     // Logging
     godot::ClassDB::bind_method(godot::D_METHOD("set_log_level", "level"), &GrpcClient::set_log_level);
     godot::ClassDB::bind_method(godot::D_METHOD("get_log_level"), &GrpcClient::get_log_level);
@@ -141,12 +152,39 @@ int GrpcClient::server_stream_start(
     const godot::PackedByteArray& request_bytes,
     const godot::Dictionary& call_opts
 ) {
+    return start_stream(StreamType::SERVER_STREAMING, full_method, request_bytes, call_opts);
+}
+
+int GrpcClient::client_stream_start(
+    const godot::String& full_method,
+    const godot::Dictionary& call_opts
+) {
+    return start_stream(StreamType::CLIENT_STREAMING, full_method, godot::PackedByteArray(), call_opts);
+}
+
+int GrpcClient::bidi_stream_start(
+    const godot::String& full_method,
+    const godot::Dictionary& call_opts
+) {
+    return start_stream(StreamType::BIDIRECTIONAL, full_method, godot::PackedByteArray(), call_opts);
+}
+
+int GrpcClient::start_stream(
+    StreamType stream_type,
+    const godot::String& full_method,
+    const godot::PackedByteArray& request_bytes,
+    const godot::Dictionary& call_opts
+) {
     std::string method = full_method.utf8().get_data();
-    Logger::debug("Starting server stream for " + method);
+    std::string type_str =
+        (stream_type == StreamType::SERVER_STREAMING ? "server-streaming" :
+         stream_type == StreamType::CLIENT_STREAMING ? "client-streaming" : "bidirectional");
+
+    Logger::debug("Starting " + type_str + " stream for " + method);
 
     auto stub = channel_pool_.get_stub();
     if (!stub) {
-        Logger::error("No active connection for server stream");
+        Logger::error("No active connection for stream");
         godot::UtilityFunctions::push_error("GrpcClient: Not connected");
         return -1;
     }
@@ -164,6 +202,7 @@ int GrpcClient::server_stream_start(
     // Create stream with callbacks
     auto stream = std::make_unique<GrpcStream>(
         stream_id,
+        stream_type,
         stub,
         method,
         request_bytes,
@@ -188,8 +227,46 @@ int GrpcClient::server_stream_start(
         active_streams_[stream_id] = std::move(stream);
     }
 
-    Logger::info("Server stream " + std::to_string(stream_id) + " started");
+    Logger::info("Stream " + std::to_string(stream_id) + " (" + type_str + ") started");
     return stream_id;
+}
+
+bool GrpcClient::stream_send(int stream_id, const godot::PackedByteArray& message_bytes) {
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+
+    auto it = active_streams_.find(stream_id);
+    if (it == active_streams_.end()) {
+        Logger::warn("Stream " + std::to_string(stream_id) + " not found for send");
+        godot::UtilityFunctions::push_warning("GrpcClient: Stream not found");
+        return false;
+    }
+
+    return it->second->send(message_bytes);
+}
+
+void GrpcClient::stream_close_send(int stream_id) {
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+
+    auto it = active_streams_.find(stream_id);
+    if (it != active_streams_.end()) {
+        Logger::debug("Closing send on stream " + std::to_string(stream_id));
+        it->second->close_send();
+    } else {
+        Logger::warn("Stream " + std::to_string(stream_id) + " not found for close_send");
+    }
+}
+
+void GrpcClient::stream_cancel(int stream_id) {
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+
+    auto it = active_streams_.find(stream_id);
+    if (it != active_streams_.end()) {
+        Logger::debug("Cancelling stream " + std::to_string(stream_id));
+        it->second->cancel();
+        active_streams_.erase(it);
+    } else {
+        Logger::warn("Stream " + std::to_string(stream_id) + " not found for cancel");
+    }
 }
 
 void GrpcClient::server_stream_cancel(int stream_id) {

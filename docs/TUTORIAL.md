@@ -411,6 +411,199 @@ The streaming demo uses three signals:
 
 ---
 
+## Working with Client-Streaming and Bidirectional Streaming
+
+godot_grpc now supports all four gRPC streaming patterns! Let's explore client-streaming and bidirectional streaming.
+
+### Client-Streaming: Send Many, Receive One
+
+Client-streaming allows you to send multiple messages and receive a single response. This is perfect for uploading files in chunks or batching data.
+
+```gdscript
+extends Node
+
+var grpc_client: GrpcClient
+var stream_id: int = 0
+
+func _ready():
+    grpc_client = GrpcClient.new()
+    grpc_client.message.connect(_on_response)
+    grpc_client.finished.connect(_on_finished)
+
+    if grpc_client.connect("dns:///localhost:50051"):
+        upload_file()
+
+func upload_file():
+    # Start client-streaming
+    stream_id = grpc_client.client_stream_start("/upload.FileService/UploadFile", {})
+
+    if stream_id <= 0:
+        print("Failed to start upload")
+        return
+
+    print("Uploading file in chunks...")
+
+    # Simulate sending 5 chunks
+    for chunk_num in range(5):
+        var chunk = create_chunk(chunk_num, "data_chunk_%d" % chunk_num)
+        if !grpc_client.stream_send(stream_id, chunk):
+            print("Failed to send chunk ", chunk_num)
+            return
+
+        print("Sent chunk ", chunk_num)
+        await get_tree().create_timer(0.1).timeout
+
+    # Signal we're done sending
+    grpc_client.stream_close_send(stream_id)
+    print("Upload complete, waiting for server confirmation...")
+
+func create_chunk(number: int, data: String) -> PackedByteArray:
+    var buf = PackedByteArray()
+    # Field 1: chunk_number (int32)
+    buf.append(0x08)
+    buf.append(number)
+    # Field 2: data (string)
+    buf.append(0x12)
+    buf.append(data.length())
+    buf.append_array(data.to_utf8_buffer())
+    return buf
+
+func _on_response(sid: int, data: PackedByteArray):
+    if sid == stream_id:
+        print("Server response: Upload successful!")
+        var response = parse_response(data)
+        print("File ID: ", response.file_id)
+
+func _on_finished(sid: int, status: int):
+    if sid == stream_id:
+        print("Upload stream finished with status: ", status)
+
+func parse_response(data: PackedByteArray) -> Dictionary:
+    # Parse the single response from server
+    return {"file_id": "uploaded_file_123", "size": 1024}
+
+func _exit_tree():
+    grpc_client.close()
+```
+
+### Bidirectional Streaming: Full Duplex Communication
+
+Bidirectional streaming allows both client and server to send messages concurrently. Perfect for real-time chat, game state sync, or interactive sessions.
+
+```gdscript
+extends Node
+
+var grpc_client: GrpcClient
+var stream_id: int = 0
+var message_count: int = 0
+
+func _ready():
+    grpc_client = GrpcClient.new()
+    grpc_client.message.connect(_on_server_message)
+    grpc_client.finished.connect(_on_stream_finished)
+    grpc_client.error.connect(_on_stream_error)
+
+    if grpc_client.connect("dns:///localhost:50051"):
+        start_chat()
+
+func start_chat():
+    # Start bidirectional stream
+    stream_id = grpc_client.bidi_stream_start("/chat.Chat/StreamChat", {})
+
+    if stream_id <= 0:
+        print("Failed to start chat")
+        return
+
+    print("Chat started!")
+
+    # Send initial message
+    send_chat_message("Hello from Godot!")
+
+    # Send periodic messages
+    for i in range(3):
+        await get_tree().create_timer(2.0).timeout
+        send_chat_message("Message %d" % (i + 1))
+
+    # Optionally close our send side (server can still send)
+    await get_tree().create_timer(1.0).timeout
+    grpc_client.stream_close_send(stream_id)
+    print("Stopped sending messages (but still receiving)")
+
+func send_chat_message(text: String):
+    var message = create_chat_message(text)
+    if grpc_client.stream_send(stream_id, message):
+        print("Sent: ", text)
+    else:
+        print("Failed to send: ", text)
+
+func create_chat_message(text: String) -> PackedByteArray:
+    var buf = PackedByteArray()
+    # Field 1: sender (string)
+    buf.append(0x0a)
+    var sender = "GodotPlayer"
+    buf.append(sender.length())
+    buf.append_array(sender.to_utf8_buffer())
+    # Field 2: text (string)
+    buf.append(0x12)
+    buf.append(text.length())
+    buf.append_array(text.to_utf8_buffer())
+    return buf
+
+func _on_server_message(sid: int, data: PackedByteArray):
+    if sid != stream_id:
+        return
+
+    var msg = parse_chat_message(data)
+    print("[%s]: %s" % [msg.sender, msg.text])
+
+    # Can respond to server messages
+    message_count += 1
+    if message_count == 2:
+        send_chat_message("Thanks for the updates!")
+
+func _on_stream_finished(sid: int, status: int):
+    if sid == stream_id:
+        print("Chat stream ended")
+
+func _on_stream_error(sid: int, code: int, message: String):
+    if sid == stream_id:
+        print("Chat error: ", message)
+
+func parse_chat_message(data: PackedByteArray) -> Dictionary:
+    # Parse incoming messages
+    return {"sender": "Server", "text": "Message from server", "timestamp": 0}
+
+func _exit_tree():
+    if stream_id > 0:
+        grpc_client.stream_cancel(stream_id)
+    grpc_client.close()
+```
+
+### Key Differences Between Stream Types
+
+| Stream Type | Client Sends | Server Sends | Use Cases |
+|-------------|--------------|--------------|-----------|
+| **Unary** | One | One | Simple requests, queries |
+| **Server-streaming** | One | Many | Live updates, downloads |
+| **Client-streaming** | Many | One | Uploads, batching data |
+| **Bidirectional** | Many | Many | Chat, real-time sync, interactive sessions |
+
+### When to Use Each Pattern
+
+**Use Client-Streaming when:**
+- Uploading files in chunks
+- Batching analytics events
+- Sending sensor data in bursts
+- Submitting form data incrementally
+
+**Use Bidirectional Streaming when:**
+- Real-time chat or messaging
+- Live game state synchronization
+- Interactive command/response sessions
+- Collaborative editing
+
+---
+
 ## Error Handling
 
 Robust error handling is crucial for production applications.
