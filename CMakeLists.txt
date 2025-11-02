@@ -37,10 +37,18 @@ elseif(UNIX)
 endif()
 
 # Build configuration suffix
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(GODOT_BUILD_TYPE "template_debug")
+# For multi-config generators (Visual Studio), use generator expressions
+# For single-config generators (Make, Ninja), use CMAKE_BUILD_TYPE
+if(CMAKE_CONFIGURATION_TYPES)
+    # Multi-config generator (Visual Studio, Xcode)
+    set(GODOT_BUILD_TYPE "$<IF:$<CONFIG:Debug>,template_debug,template_release>")
 else()
-    set(GODOT_BUILD_TYPE "template_release")
+    # Single-config generator (Make, Ninja)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(GODOT_BUILD_TYPE "template_debug")
+    else()
+        set(GODOT_BUILD_TYPE "template_release")
+    endif()
 endif()
 
 # Library name
@@ -105,6 +113,11 @@ target_link_libraries(${LIBRARY_NAME} PRIVATE
 if(MSVC)
     target_compile_options(${LIBRARY_NAME} PRIVATE /W4 /WX-)
     target_compile_definitions(${LIBRARY_NAME} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # Use generator expressions for multi-config generators (Visual Studio)
+    target_compile_options(${LIBRARY_NAME} PRIVATE
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Debug>:/Od>
+    )
 else()
     target_compile_options(${LIBRARY_NAME} PRIVATE
         -Wall
@@ -112,20 +125,16 @@ else()
         -Wno-unused-parameter
         -Wno-missing-field-initializers
     )
-endif()
-
-# Release optimizations
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    if(MSVC)
-        target_compile_options(${LIBRARY_NAME} PRIVATE /O2)
-    else()
-        target_compile_options(${LIBRARY_NAME} PRIVATE -O3)
-        # Strip symbols on Unix-like systems
-        if(APPLE)
-            target_link_options(${LIBRARY_NAME} PRIVATE -Wl,-dead_strip)
-        elseif(UNIX)
-            target_link_options(${LIBRARY_NAME} PRIVATE -Wl,--strip-all)
-        endif()
+    # Optimization flags for Unix-like systems
+    target_compile_options(${LIBRARY_NAME} PRIVATE
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Debug>:-Og>
+    )
+    # Strip symbols on Unix-like systems for Release builds
+    if(APPLE)
+        target_link_options(${LIBRARY_NAME} PRIVATE $<$<CONFIG:Release>:-Wl,-dead_strip>)
+    elseif(UNIX)
+        target_link_options(${LIBRARY_NAME} PRIVATE $<$<CONFIG:Release>:-Wl,--strip-all>)
     endif()
 endif()
 
@@ -138,10 +147,22 @@ set_target_properties(${LIBRARY_NAME} PROPERTIES
 
 # Set output directory
 set(OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/demo/addons/godot_grpc/bin/${GODOT_PLATFORM}")
-set_target_properties(${LIBRARY_NAME} PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}"
-)
+
+# For multi-config generators, we need to set per-config output directories
+if(CMAKE_CONFIGURATION_TYPES)
+    foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
+        string(TOUPPER ${CONFIG} CONFIG_UPPER)
+        set_target_properties(${LIBRARY_NAME} PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${CONFIG_UPPER} "${OUTPUT_DIR}"
+            RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER} "${OUTPUT_DIR}"
+        )
+    endforeach()
+else()
+    set_target_properties(${LIBRARY_NAME} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}"
+    )
+endif()
 
 # Platform-specific settings
 if(APPLE)
