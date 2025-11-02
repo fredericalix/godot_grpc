@@ -1,0 +1,209 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version'
+        required: true
+        default: 'v0.1.0'
+
+jobs:
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+        build_type: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          ./bootstrap-vcpkg.sh
+          echo "VCPKG_ROOT=$PWD" >> $GITHUB_ENV
+
+      - name: Clone godot-cpp
+        run: |
+          git clone https://github.com/godotengine/godot-cpp
+          cd godot-cpp
+          git checkout 4.3
+
+      - name: Configure CMake
+        run: |
+          mkdir build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DUSE_VCPKG=ON
+
+      - name: Build
+        run: |
+          cd build
+          cmake --build . --config ${{ matrix.build_type }} -j$(sysctl -n hw.ncpu)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-${{ matrix.build_type }}
+          path: demo/addons/godot_grpc/bin/macos/*
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            zlib1g-dev \
+            curl \
+            zip \
+            unzip \
+            tar
+
+      - name: Install vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          ./bootstrap-vcpkg.sh
+          echo "VCPKG_ROOT=$PWD" >> $GITHUB_ENV
+
+      - name: Clone godot-cpp
+        run: |
+          git clone https://github.com/godotengine/godot-cpp
+          cd godot-cpp
+          git checkout 4.3
+
+      - name: Configure CMake
+        run: |
+          mkdir build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+            -DUSE_VCPKG=ON
+
+      - name: Build
+        run: |
+          cd build
+          cmake --build . --config ${{ matrix.build_type }} -j$(nproc)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-${{ matrix.build_type }}
+          path: demo/addons/godot_grpc/bin/linux/*
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          .\bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=$PWD" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Clone godot-cpp
+        run: |
+          git clone https://github.com/godotengine/godot-cpp
+          cd godot-cpp
+          git checkout 4.3
+
+      - name: Configure CMake
+        run: |
+          mkdir build
+          cd build
+          cmake .. `
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DUSE_VCPKG=ON `
+            -G "Visual Studio 17 2022" `
+            -A x64
+
+      - name: Build
+        run: |
+          cd build
+          cmake --build . --config ${{ matrix.build_type }} --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-${{ matrix.build_type }}
+          path: demo/addons/godot_grpc/bin/windows/*
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release/addons/godot_grpc/bin
+
+          # Copy all binaries
+          cp -r artifacts/macos-arm64-Release/* release/addons/godot_grpc/bin/macos/ || true
+          cp -r artifacts/macos-x86_64-Release/* release/addons/godot_grpc/bin/macos/ || true
+          cp -r artifacts/linux-x86_64-Release/* release/addons/godot_grpc/bin/linux/ || true
+          cp -r artifacts/windows-x86_64-Release/* release/addons/godot_grpc/bin/windows/ || true
+
+          # Copy addon files
+          cp -r demo/addons/godot_grpc/*.gdextension release/addons/godot_grpc/
+          cp -r demo/addons/godot_grpc/*.cfg release/addons/godot_grpc/ || true
+
+          # Create archive
+          cd release
+          zip -r ../godot_grpc-${{ github.ref_name }}.zip addons/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            godot_grpc-${{ github.ref_name }}.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
