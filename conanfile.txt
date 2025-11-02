@@ -1,0 +1,12 @@
+[requires]
+grpc/1.54.3
+protobuf/3.21.12
+abseil/20230125.3
+
+[generators]
+cmake
+cmake_find_package
+
+[options]
+grpc:shared=False
+protobuf:shared=False

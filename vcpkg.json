@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "godot-grpc",
+  "version-string": "1.0.0",
+  "description": "gRPC client GDExtension for Godot 4.3+",
+  "homepage": "https://github.com/yourusername/godot_grpc",
+  "license": "BSD-3-Clause",
+  "dependencies": [
+    "grpc",
+    "protobuf",
+    "abseil"
+  ]
+}

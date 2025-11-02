@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package metrics;
+
+option go_package = ".;main";
+
+// The metrics service definition.
+service Monitor {
+  // Streams metrics data
+  rpc StreamMetrics (MetricsRequest) returns (stream MetricData) {}
+}
+
+// The request message for metrics streaming.
+message MetricsRequest {
+  int32 interval_ms = 1;  // Interval in milliseconds
+  int32 count = 2;        // Number of metrics to send (0 = infinite)
+}
+
+// A single metric data point.
+message MetricData {
+  string name = 1;
+  double value = 2;
+  int64 timestamp = 3;
+}
