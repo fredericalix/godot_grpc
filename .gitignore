@@ -1,0 +1,51 @@
+# Build directories
+build/
+bin/
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!cmake/
+
+# godot-cpp
+godot-cpp/
+
+# vcpkg
+vcpkg_installed/
+
+# Conan
+conaninfo.txt
+conanbuildinfo.*
+graph_info.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Godot
+.godot/
+*.import
+*.translation
+
+# Demo server generated files
+demo_server/*.pb.go
+demo_server/demo_server
+demo_server/go.sum
+
+# Logs
+*.log
+
+vcpkg/

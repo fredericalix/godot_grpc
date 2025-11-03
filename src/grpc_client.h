@@ -194,21 +194,6 @@ private:
     std::mutex streams_mutex_;
     std::map<int, std::unique_ptr<GrpcStream>> active_streams_;
     int next_stream_id_;
-
-    // Deferred signal emission (to be called on main thread)
-    struct PendingSignal {
-        enum Type { MESSAGE, FINISHED, ERROR };
-        Type type;
-        int stream_id;
-        godot::PackedByteArray data;
-        int status_code;
-        godot::String message;
-    };
-
-    std::mutex pending_signals_mutex_;
-    std::vector<PendingSignal> pending_signals_;
-
-    void process_pending_signals();
 };
 
 } // namespace godot_grpc
