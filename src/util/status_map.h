@@ -40,7 +40,7 @@ public:
  */
 enum class LogLevel {
     NONE = 0,
-    ERROR = 1,
+    ERR = 1,    // Renamed from ERROR to avoid Windows macro conflict
     WARN = 2,
     INFO = 3,
     DEBUG = 4,

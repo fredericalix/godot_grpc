@@ -15,7 +15,7 @@ LogLevel Logger::get_level() {
 }
 
 void Logger::error(const std::string& message) {
-    if (current_level >= LogLevel::ERROR) {
+    if (current_level >= LogLevel::ERR) {
         godot::UtilityFunctions::push_error(("[GodotGRPC ERROR] " + message).c_str());
     }
 }
