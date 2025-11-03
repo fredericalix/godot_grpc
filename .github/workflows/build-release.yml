@@ -125,7 +125,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       matrix:
-        build_type: [Release, Debug]
+        build_type: [Release]  # Only Release - Debug has runtime library conflicts with godot-cpp
     steps:
       - uses: actions/checkout@v4
         with:
